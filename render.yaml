@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: nashrat-oman-renderer
+    env: docker
+    plan: free
+    envVars:
+      - key: RENDER_SHARED_TOKEN
+        sync: false
+    healthCheckPath: /health

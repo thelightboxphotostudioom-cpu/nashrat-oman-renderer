@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>نشرة عُمان - post</title>
+<style>
+  {{ tajawal_css }}
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1080px; height: 1080px; }
+  body { font-family: 'Tajawal', sans-serif; overflow: hidden; background: #0B1F3A; }
+
+  .canvas {
+    width: 1080px; height: 1080px; position: relative; overflow: hidden;
+    background: #0B1F3A;
+  }
+
+  .photo {
+    position: absolute; inset: 0; width: 1080px; height: 1080px;
+    object-fit: cover; object-position: center;
+    {% if is_mourning %}filter: grayscale(55%) contrast(1.02);{% endif %}
+  }
+  .photo-fallback {
+    position: absolute; inset: 0; width: 1080px; height: 1080px;
+    background: radial-gradient(circle at 30% 20%, #1B3A63, #0B1F3A 70%);
+  }
+
+  .top-scrim {
+    position: absolute; top: 0; left: 0; right: 0; height: 160px;
+    background: linear-gradient(to bottom, rgba(11,31,58,.80), rgba(11,31,58,0));
+  }
+
+  .logo-chip {
+    position: absolute; top: 28px; left: 28px; width: 52px; height: 52px;
+    background: #FFFFFF; border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 10px rgba(0,0,0,.25);
+  }
+  .logo-chip img { width: 32px; height: 34px; object-fit: contain; }
+
+  .wordmark {
+    position: absolute; top: 28px; left: 92px; height: 52px;
+    display: flex; align-items: center;
+    color: #FFFFFF; font-size: 24px; font-weight: 800;
+    text-shadow: 0 2px 8px rgba(0,0,0,.45);
+  }
+
+  .category-pill {
+    position: absolute; top: 28px; right: 28px;
+    background: #13294B; border-radius: 26px; padding: 10px 22px;
+    display: flex; align-items: center; gap: 8px;
+    color: #FFFFFF; font-size: 20px; font-weight: 700;
+    box-shadow: 0 2px 10px rgba(0,0,0,.25);
+  }
+
+  .photo-tag-pill {
+    position: absolute; top: 86px; right: 28px;
+    background: rgba(19,41,75,.78); border-radius: 18px; padding: 6px 16px;
+    color: #E7ECF4; font-size: 14px; font-weight: 700;
+  }
+
+  .ai-disclaimer {
+    background: rgba(161,98,7,.95); color: #FFFFFF;
+    font-size: 16px; font-weight: 700; text-align: center;
+    padding: 10px 16px;
+  }
+
+  .mourning-ribbon {
+    position: absolute; top: 28px; left: 92px; margin-top: 2px;
+    color: #C9D3E2; font-size: 14px; font-weight: 500;
+  }
+
+  .bottom-wrap {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    display: flex; flex-direction: column;
+  }
+
+  .stripe {
+    height: 8px; width: 100%;
+    background: linear-gradient(to right,
+      #007A3D 0%, #007A3D 33.33%,
+      #DB161E 33.33%, #DB161E 66.66%,
+      #FFFFFF 66.66%, #FFFFFF 100%);
+  }
+
+  .panel {
+    background: rgba(11,31,58,.94);
+    padding: 34px 64px 30px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; text-align: center;
+  }
+  .headline {
+    color: #FFFFFF; font-size: 44px; font-weight: 800; line-height: 1.35;
+    max-width: 920px;
+  }
+  .summary {
+    color: #D7DEEA; font-size: 25px; font-weight: 500; line-height: 1.55;
+    max-width: 880px;
+  }
+  .source {
+    color: #8FA0BC; font-size: 15px; font-weight: 500;
+  }
+
+  .footer {
+    height: 64px; width: 100%; background: #007A3D;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 28px;
+  }
+  .footer-left { display: flex; align-items: center; gap: 10px; }
+  .footer-left img { width: 18px; height: 20px; object-fit: contain; }
+  .footer-left span { color: #FFFFFF; font-size: 17px; font-weight: 800; }
+  .footer-right { color: rgba(255,255,255,.9); font-size: 15px; font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="canvas">
+
+  {% if photo_url %}
+  <img class="photo" src="{{ photo_url }}">
+  {% else %}
+  <div class="photo-fallback"></div>
+  {% endif %}
+
+  <div class="top-scrim"></div>
+
+  <div class="logo-chip"><img src="data:image/png;base64,{{ logo_navy_b64 }}"></div>
+  <div class="wordmark">نشرة عُمان</div>
+  {% if is_mourning %}<div class="mourning-ribbon">تعزية</div>{% endif %}
+
+  <div class="category-pill">
+    <span>{{ category_emoji }}</span><span>{{ category_label }}</span>
+  </div>
+  {% if photo_tag_text %}
+  <div class="photo-tag-pill">✓ {{ photo_tag_text }}</div>
+  {% endif %}
+
+  <div class="bottom-wrap">
+    {% if ai_disclaimer %}
+    <div class="ai-disclaimer">صورة توضيحية مولّدة بالذكاء الاصطناعي — ليست من موقع حقيقي</div>
+    {% endif %}
+    <div class="stripe"></div>
+    <div class="panel">
+      <div class="headline">{{ headline }}</div>
+      {% if summary %}<div class="summary">{{ summary }}</div>{% endif %}
+      {% if source %}<div class="source">المصدر: {{ source }}</div>{% endif %}
+    </div>
+    <div class="footer">
+      <div class="footer-left">
+        <img src="data:image/png;base64,{{ logo_b64 }}">
+        <span>نشرة عُمان</span>
+      </div>
+      <div class="footer-right">@nashratoman · {{ date_text }}</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
