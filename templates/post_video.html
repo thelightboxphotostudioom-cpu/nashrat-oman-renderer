@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>نشرة عُمان - video post</title>
+<style>
+  {{ tajawal_css }}
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: {{ canvas_w }}px; height: {{ canvas_h }}px; }
+  body { font-family: 'Tajawal', sans-serif; overflow: hidden; background: #0B1F3A; }
+
+  .canvas {
+    width: {{ canvas_w }}px; height: {{ canvas_h }}px; position: relative; overflow: hidden;
+    background: #0B1F3A;
+  }
+
+  /* ---- video layer ---- */
+  {% if video_mode == 'cover' %}
+  .video-wrap {
+    position: absolute; inset: 0; width: {{ canvas_w }}px; height: {{ canvas_h }}px;
+  }
+  .video-wrap video {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; object-position: center;
+  }
+  {% else %}
+  /* "window" mode: landscape/square source video shown un-cropped inside a
+     centered rounded frame, with the branded navy canvas around it, so a
+     horizontal clip is never stretched or cropped to fit a vertical Reel. */
+  .video-wrap {
+    position: absolute; left: 0; right: 0; top: {{ window_top }}px;
+    width: {{ canvas_w }}px; height: {{ window_h }}px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .video-frame {
+    width: {{ window_draw_w }}px; height: {{ window_draw_h }}px;
+    border-radius: 24px; overflow: hidden; background: #000;
+    box-shadow: 0 10px 40px rgba(0,0,0,.45);
+  }
+  .video-frame video {
+    width: 100%; height: 100%; object-fit: contain; background: #000;
+  }
+  {% endif %}
+
+  .top-scrim {
+    position: absolute; top: 0; left: 0; right: 0; height: 160px;
+    background: linear-gradient(to bottom, rgba(11,31,58,.80), rgba(11,31,58,0));
+    {% if video_mode != 'cover' %}opacity: 0;{% endif %}
+  }
+
+  .logo-chip {
+    position: absolute; top: 28px; left: 28px; width: 52px; height: 52px;
+    background: #FFFFFF; border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 10px rgba(0,0,0,.25);
+  }
+  .logo-chip img { width: 32px; height: 34px; object-fit: contain; }
+
+  .wordmark {
+    position: absolute; top: 28px; left: 92px; height: 52px;
+    display: flex; align-items: center;
+    color: #FFFFFF; font-size: 24px; font-weight: 800;
+    text-shadow: 0 2px 8px rgba(0,0,0,.45);
+  }
+
+  .category-pill {
+    position: absolute; top: 28px; right: 28px;
+    background: #13294B; border-radius: 26px; padding: 10px 22px;
+    display: flex; align-items: center; gap: 8px;
+    color: #FFFFFF; font-size: 20px; font-weight: 700;
+    box-shadow: 0 2px 10px rgba(0,0,0,.25);
+  }
+
+  .reel-pill {
+    position: absolute; top: 86px; right: 28px;
+    background: rgba(19,41,75,.78); border-radius: 18px; padding: 6px 16px;
+    color: #E7ECF4; font-size: 14px; font-weight: 700;
+  }
+
+  .bottom-wrap {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    display: flex; flex-direction: column;
+  }
+
+  .stripe {
+    height: 8px; width: 100%;
+    background: linear-gradient(to right,
+      #007A3D 0%, #007A3D 33.33%,
+      #DB161E 33.33%, #DB161E 66.66%,
+      #FFFFFF 66.66%, #FFFFFF 100%);
+  }
+
+  .panel {
+    background: rgba(11,31,58,.94);
+    padding: 34px 64px 30px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; text-align: center;
+  }
+  .headline {
+    color: #FFFFFF; font-size: 44px; font-weight: 800; line-height: 1.35;
+    max-width: 920px;
+  }
+  .summary {
+    color: #D7DEEA; font-size: 25px; font-weight: 500; line-height: 1.55;
+    max-width: 880px;
+  }
+  .source {
+    color: #8FA0BC; font-size: 15px; font-weight: 500;
+  }
+
+  .footer {
+    height: 64px; width: 100%; background: #007A3D;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 28px;
+  }
+  .footer-left { display: flex; align-items: center; gap: 10px; }
+  .footer-left img { width: 18px; height: 20px; object-fit: contain; }
+  .footer-left span { color: #FFFFFF; font-size: 17px; font-weight: 800; }
+  .footer-right { color: rgba(255,255,255,.9); font-size: 15px; font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="canvas">
+
+  {% if video_mode == 'cover' %}
+  <div class="video-wrap"><video id="clip" src="{{ video_src }}" muted autoplay playsinline></video></div>
+  {% else %}
+  <div class="video-wrap"><div class="video-frame"><video id="clip" src="{{ video_src }}" muted autoplay playsinline></video></div></div>
+  {% endif %}
+
+  <div class="top-scrim"></div>
+
+  <div class="logo-chip"><img src="data:image/png;base64,{{ logo_navy_b64 }}"></div>
+  <div class="wordmark">نشرة عُمان</div>
+
+  <div class="category-pill">
+    <span>{{ category_emoji }}</span><span>{{ category_label }}</span>
+  </div>
+  <div class="reel-pill">▶ ريل</div>
+
+  <div class="bottom-wrap">
+    <div class="stripe"></div>
+    <div class="panel">
+      <div class="headline">{{ headline }}</div>
+      {% if summary %}<div class="summary">{{ summary }}</div>{% endif %}
+      {% if source %}<div class="source">المصدر: {{ source }}</div>{% endif %}
+    </div>
+    <div class="footer">
+      <div class="footer-left">
+        <img src="data:image/png;base64,{{ logo_b64 }}">
+        <span>نشرة عُمان</span>
+      </div>
+      <div class="footer-right">@nashratoman · {{ date_text }}</div>
+    </div>
+  </div>
+
+</div>
+<script>
+  window.__ended = false;
+  const v = document.getElementById('clip');
+  v.addEventListener('ended', () => { window.__ended = true; });
+  v.play().catch(() => {});
+</script>
+</body>
+</html>
