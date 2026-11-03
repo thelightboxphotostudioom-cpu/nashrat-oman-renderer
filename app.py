@@ -1,7 +1,10 @@
 import asyncio
+import gc
 import json
 import os
+import resource
 import shutil
+import sys
 import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -13,6 +16,16 @@ from fastapi.responses import Response
 from jinja2 import Environment, FileSystemLoader
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, Field
+
+BUILD_VERSION = os.environ.get("RENDER_GIT_COMMIT", "local-dev")[:12]
+
+
+def _log_rss(stage: str) -> None:
+    # Visible in Render's own log stream even though we can't read it
+    # ourselves - at least gives a trail of which stage reached how much
+    # memory before any crash, for whoever can see the dashboard.
+    rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    print(f"[nvr {BUILD_VERSION}] {stage}: peak_rss={rss_mb:.0f}MB", file=sys.stderr, flush=True)
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -141,7 +154,7 @@ async def _probe(path: str) -> dict:
 
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    return {"ok": True, "build": BUILD_VERSION}
 
 
 @app.post("/render")
@@ -197,11 +210,14 @@ async def render_video(req: VideoRenderRequest):
         raise HTTPException(status_code=401, detail="invalid token")
 
     tmpdir = tempfile.mkdtemp(prefix="nvr_")
+    _log_rss("start")
     try:
         src_path = os.path.join(tmpdir, "src.bin")
         await _download(req.video_url, src_path)
+        _log_rss("downloaded")
 
         info = await _probe(src_path)
+        _log_rss("probed")
         width, height, duration, has_audio = (
             info["width"], info["height"], info["duration"], info["has_audio"]
         )
@@ -266,6 +282,11 @@ async def render_video(req: VideoRenderRequest):
             await page.screenshot(path=chrome_png, omit_background=True)
         finally:
             await page.close()
+        _log_rss("chrome_png_rendered")
+        # Force Chromium's renderer to actually release pages/buffers before
+        # ffmpeg starts its own allocations, rather than letting Python's GC
+        # get to it whenever - on a 512MB instance that overlap matters.
+        gc.collect()
 
         final_mp4 = os.path.join(tmpdir, "final.mp4")
         if video_mode == "cover":
@@ -310,13 +331,26 @@ async def render_video(req: VideoRenderRequest):
                 mux_args += ["-map", "2:a:0", "-c:a", "aac", "-b:a", "128k"]
         mux_args += [
             "-t", str(duration),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "high",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
+            # Keep libx264's own memory footprint down on a 512MB host:
+            # one thread (ffmpeg otherwise spawns one per visible core, even
+            # on a shared/constrained host), a fast preset (medium's wider
+            # motion search + more reference frames cost real RAM at
+            # 1080x1920), and a short lookahead buffer.
+            "-threads", "1", "-preset", "veryfast",
+            "-x264-params", "rc-lookahead=10",
             "-movflags", "+faststart", final_mp4,
         ]
-        await _run(*mux_args, timeout=120.0)
+        try:
+            await _run(*mux_args, timeout=120.0)
+        except HTTPException:
+            _log_rss("ffmpeg_failed")
+            raise
+        _log_rss("ffmpeg_done")
 
         with open(final_mp4, "rb") as f:
             mp4_bytes = f.read()
+        _log_rss("read_final")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
