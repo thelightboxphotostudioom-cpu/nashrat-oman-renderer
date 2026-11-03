@@ -73,7 +73,9 @@ _browser = None
 async def lifespan(app: FastAPI):
     global _playwright, _browser
     _playwright = await async_playwright().start()
-    _browser = await _playwright.chromium.launch(args=["--no-sandbox"])
+    _browser = await _playwright.chromium.launch(
+        args=["--no-sandbox", "--disable-dev-shm-usage"]
+    )
     yield
     await _browser.close()
     await _playwright.stop()
