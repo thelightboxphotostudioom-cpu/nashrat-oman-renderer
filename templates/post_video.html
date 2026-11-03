@@ -8,7 +8,10 @@
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { width: {{ canvas_w }}px; height: {{ canvas_h }}px; }
-  body { font-family: 'Tajawal', sans-serif; overflow: hidden; background: #0B1F3A; }
+  body {
+    font-family: 'Tajawal', sans-serif; overflow: hidden; background: #0B1F3A;
+    {% if record_scale and record_scale != 1 %}zoom: {{ record_scale }};{% endif %}
+  }
 
   .canvas {
     width: {{ canvas_w }}px; height: {{ canvas_h }}px; position: relative; overflow: hidden;

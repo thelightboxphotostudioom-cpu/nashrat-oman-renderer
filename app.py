@@ -191,6 +191,16 @@ VIDEO_CANVAS_W = 1080
 VIDEO_CANVAS_H = 1920
 MAX_CLIP_SECONDS = 90  # Instagram's own Reel cap
 
+# Recording the full 1080x1920 frame worked fine locally but 502'd on
+# Render's free 512MB instance even after --disable-dev-shm-usage - the
+# video layer's raster/encode buffers at full resolution are themselves too
+# heavy. Render at half resolution (CSS `zoom` on the template, which scales
+# layout+paint together, not just a post-hoc transform) and upscale back to
+# the full Reel canvas in the cheap final ffmpeg mux step instead.
+RECORD_SCALE = 0.5
+RECORD_W = round(VIDEO_CANVAS_W * RECORD_SCALE)
+RECORD_H = round(VIDEO_CANVAS_H * RECORD_SCALE)
+
 
 @app.post("/render-video")
 async def render_video(req: VideoRenderRequest):
@@ -260,6 +270,7 @@ async def render_video(req: VideoRenderRequest):
             logo_navy_b64=LOGO_NAVY_B64,
             canvas_w=VIDEO_CANVAS_W,
             canvas_h=VIDEO_CANVAS_H,
+            record_scale=RECORD_SCALE,
             video_mode=video_mode,
             video_src=f"data:video/webm;base64,{clip_b64}",
             window_top=window_top,
@@ -275,9 +286,9 @@ async def render_video(req: VideoRenderRequest):
         )
 
         ctx = await _browser.new_context(
-            viewport={"width": VIDEO_CANVAS_W, "height": VIDEO_CANVAS_H},
+            viewport={"width": RECORD_W, "height": RECORD_H},
             record_video_dir=tmpdir,
-            record_video_size={"width": VIDEO_CANVAS_W, "height": VIDEO_CANVAS_H},
+            record_video_size={"width": RECORD_W, "height": RECORD_H},
         )
         page = await ctx.new_page()
         try:
@@ -294,11 +305,18 @@ async def render_video(req: VideoRenderRequest):
         await ctx.close()
 
         final_mp4 = os.path.join(tmpdir, "final.mp4")
+        # The capture ran at RECORD_W x RECORD_H to stay inside Render's
+        # free-tier memory budget; scale back up to the real Reel canvas here
+        # - a plain resize is cheap next to Chromium's own raster/encode cost.
+        upscale = f"scale={VIDEO_CANVAS_W}:{VIDEO_CANVAS_H}:flags=lanczos"
         mux_args = ["ffmpeg", "-y", "-i", recorded_path]
         if has_audio:
-            mux_args += ["-i", src_path, "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-b:a", "128k", "-shortest"]
+            mux_args += [
+                "-i", src_path, "-map", "0:v:0", "-map", "1:a:0",
+                "-vf", upscale, "-c:a", "aac", "-b:a", "128k", "-shortest",
+            ]
         else:
-            mux_args += ["-map", "0:v:0"]
+            mux_args += ["-map", "0:v:0", "-vf", upscale]
         mux_args += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart", final_mp4]
         await _run(*mux_args, timeout=120.0)
 
