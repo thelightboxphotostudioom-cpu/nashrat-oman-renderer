@@ -84,10 +84,12 @@ _browser = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _playwright, _browser
+    print(f"[nvr {BUILD_VERSION}] starting up", file=sys.stderr, flush=True)
     _playwright = await async_playwright().start()
     _browser = await _playwright.chromium.launch(
         args=["--no-sandbox", "--disable-dev-shm-usage"]
     )
+    print(f"[nvr {BUILD_VERSION}] chromium launched, ready", file=sys.stderr, flush=True)
     yield
     await _browser.close()
     await _playwright.stop()
