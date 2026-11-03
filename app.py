@@ -110,15 +110,26 @@ async def _download(url: str, dest: str) -> None:
                     f.write(chunk)
 
 
-async def _run(*args: str, timeout: float = 120.0) -> tuple[bytes, bytes]:
+async def _run(*args: str, timeout: float = 120.0, stage: str = "") -> tuple[bytes, bytes]:
     proc = await asyncio.create_subprocess_exec(
         *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        # Don't leave the subprocess running - and surface which stage/how
+        # long, instead of the caller just getting a bare connection drop.
+        proc.kill()
+        await proc.wait()
+        raise HTTPException(
+            status_code=504,
+            detail=f"stage={stage or args[0]} timed out after {timeout}s",
+        )
     if proc.returncode != 0:
         raise HTTPException(
             status_code=502,
-            detail=f"{args[0]} failed (code {proc.returncode}): {err.decode(errors='ignore')[-800:]}",
+            detail=f"stage={stage or args[0]} failed (code {proc.returncode}): "
+                   f"{err.decode(errors='ignore')[-800:]}",
         )
     return out, err
 
@@ -127,6 +138,7 @@ async def _probe(path: str) -> dict:
     out, _ = await _run(
         "ffprobe", "-v", "error", "-print_format", "json",
         "-show_format", "-show_streams", path,
+        stage="ffprobe",
     )
     data = json.loads(out)
     v_stream = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
@@ -332,17 +344,23 @@ async def render_video(req: VideoRenderRequest):
         mux_args += [
             "-t", str(duration),
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
-            # Keep libx264's own memory footprint down on a 512MB host:
-            # one thread (ffmpeg otherwise spawns one per visible core, even
-            # on a shared/constrained host), a fast preset (medium's wider
-            # motion search + more reference frames cost real RAM at
-            # 1080x1920), and a short lookahead buffer.
-            "-threads", "1", "-preset", "veryfast",
+            # Render's free-tier CPU is heavily shared/throttled - the last
+            # attempt wasn't OOM-killed any more (that was silent, this one
+            # is a clean 500 from our own asyncio timeout), it was just too
+            # slow: ffmpeg didn't finish within the old 120s budget. Trade
+            # encode quality for speed (ultrafast + a higher CRF - this
+            # output gets re-encoded by Instagram on upload anyway, so
+            # perfect compression here buys nothing), one thread to avoid
+            # core-count detection overhead on a constrained host, and a
+            # short lookahead buffer.
+            "-threads", "1", "-preset", "ultrafast", "-crf", "26",
             "-x264-params", "rc-lookahead=10",
             "-movflags", "+faststart", final_mp4,
         ]
         try:
-            await _run(*mux_args, timeout=120.0)
+            # 270s leaves margin under n8n's "Render Branded Video" node's
+            # own 300s wait, and under this handler's overall budget.
+            await _run(*mux_args, timeout=270.0, stage="ffmpeg_encode")
         except HTTPException:
             _log_rss("ffmpeg_failed")
             raise
