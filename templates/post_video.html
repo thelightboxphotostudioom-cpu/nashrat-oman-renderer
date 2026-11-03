@@ -2,47 +2,38 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="utf-8">
-<title>نشرة عُمان - video post</title>
+<title>نشرة عُمان - video chrome overlay</title>
 <style>
   {{ tajawal_css }}
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: {{ canvas_w }}px; height: {{ canvas_h }}px; }
-  body {
-    font-family: 'Tajawal', sans-serif; overflow: hidden; background: #0B1F3A;
-    {% if record_scale and record_scale != 1 %}zoom: {{ record_scale }};{% endif %}
-  }
+  html, body { width: {{ canvas_w }}px; height: {{ canvas_h }}px; background: transparent; }
+  body { font-family: 'Tajawal', sans-serif; overflow: hidden; }
 
+  /* This page renders ONLY the branded chrome as a single transparent PNG -
+     no <video> element, no recording. ffmpeg composites the real video
+     underneath it afterwards (cover mode: full-bleed behind everything;
+     window mode: boxed inside the gap the four navy frame bars below leave
+     open), which is far lighter than having Chromium record video itself. */
   .canvas {
     width: {{ canvas_w }}px; height: {{ canvas_h }}px; position: relative; overflow: hidden;
-    background: #0B1F3A;
   }
 
-  /* ---- video layer ---- */
-  {% if video_mode == 'cover' %}
-  .video-wrap {
-    position: absolute; inset: 0; width: {{ canvas_w }}px; height: {{ canvas_h }}px;
-  }
-  .video-wrap video {
-    position: absolute; inset: 0; width: 100%; height: 100%;
-    object-fit: cover; object-position: center;
-  }
-  {% else %}
-  /* "window" mode: landscape/square source video shown un-cropped inside a
-     centered rounded frame, with the branded navy canvas around it, so a
-     horizontal clip is never stretched or cropped to fit a vertical Reel. */
-  .video-wrap {
-    position: absolute; left: 0; right: 0; top: {{ window_top }}px;
-    width: {{ canvas_w }}px; height: {{ window_h }}px;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .video-frame {
+  {% if video_mode == 'window' %}
+  /* Four opaque navy bars forming a frame around the open window rect,
+     instead of one solid background - this is what lets the real video
+     show through that rect once ffmpeg composites it underneath. */
+  .frame-bar { position: absolute; background: #0B1F3A; }
+  .frame-top    { left: 0; top: 0; width: {{ canvas_w }}px; height: {{ window_top }}px; }
+  .frame-bottom { left: 0; top: {{ window_top + window_draw_h }}px; width: {{ canvas_w }}px;
+                  height: {{ canvas_h - window_top - window_draw_h }}px; }
+  .frame-left   { left: 0; top: {{ window_top }}px; width: {{ window_left }}px; height: {{ window_draw_h }}px; }
+  .frame-right  { left: {{ window_left + window_draw_w }}px; top: {{ window_top }}px;
+                  width: {{ canvas_w - window_left - window_draw_w }}px; height: {{ window_draw_h }}px; }
+  .window-shadow {
+    position: absolute; left: {{ window_left }}px; top: {{ window_top }}px;
     width: {{ window_draw_w }}px; height: {{ window_draw_h }}px;
-    border-radius: 24px; overflow: hidden; background: #000;
-    box-shadow: 0 10px 40px rgba(0,0,0,.45);
-  }
-  .video-frame video {
-    width: 100%; height: 100%; object-fit: contain; background: #000;
+    box-shadow: 0 10px 40px rgba(0,0,0,.45); border-radius: 24px;
   }
   {% endif %}
 
@@ -126,10 +117,12 @@
 <body>
 <div class="canvas">
 
-  {% if video_mode == 'cover' %}
-  <div class="video-wrap"><video id="clip" src="{{ video_src }}" muted autoplay playsinline></video></div>
-  {% else %}
-  <div class="video-wrap"><div class="video-frame"><video id="clip" src="{{ video_src }}" muted autoplay playsinline></video></div></div>
+  {% if video_mode == 'window' %}
+  <div class="frame-bar frame-top"></div>
+  <div class="frame-bar frame-bottom"></div>
+  <div class="frame-bar frame-left"></div>
+  <div class="frame-bar frame-right"></div>
+  <div class="window-shadow"></div>
   {% endif %}
 
   <div class="top-scrim"></div>
@@ -159,11 +152,5 @@
   </div>
 
 </div>
-<script>
-  window.__ended = false;
-  const v = document.getElementById('clip');
-  v.addEventListener('ended', () => { window.__ended = true; });
-  v.play().catch(() => {});
-</script>
 </body>
 </html>

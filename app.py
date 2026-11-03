@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import os
 import shutil
@@ -191,16 +190,6 @@ VIDEO_CANVAS_W = 1080
 VIDEO_CANVAS_H = 1920
 MAX_CLIP_SECONDS = 90  # Instagram's own Reel cap
 
-# Recording the full 1080x1920 frame worked fine locally but 502'd on
-# Render's free 512MB instance even after --disable-dev-shm-usage - the
-# video layer's raster/encode buffers at full resolution are themselves too
-# heavy. Render at half resolution (CSS `zoom` on the template, which scales
-# layout+paint together, not just a post-hoc transform) and upscale back to
-# the full Reel canvas in the cheap final ffmpeg mux step instead.
-RECORD_SCALE = 0.5
-RECORD_W = round(VIDEO_CANVAS_W * RECORD_SCALE)
-RECORD_H = round(VIDEO_CANVAS_H * RECORD_SCALE)
-
 
 @app.post("/render-video")
 async def render_video(req: VideoRenderRequest):
@@ -223,7 +212,7 @@ async def render_video(req: VideoRenderRequest):
 
         video_mode = "cover" if aspect <= 0.8 else "window"
 
-        window_top = window_h = window_draw_w = window_draw_h = 0
+        window_left = window_top = window_draw_w = window_draw_h = 0
         if video_mode == "window":
             margin = 60
             top_safe = 170
@@ -236,45 +225,30 @@ async def render_video(req: VideoRenderRequest):
                 draw_h = avail_h
                 draw_w = draw_w * scale
             window_top = int(top_safe + (avail_h - draw_h) / 2)
-            window_h = int(draw_h)
+            window_left = int((VIDEO_CANVAS_W - draw_w) / 2)
             window_draw_w = int(draw_w)
             window_draw_h = int(draw_h)
 
-        # Headless Chromium here cannot decode H.264 (fails silently, blank
-        # <video>) but plays VP9/WebM fine — transcode before rendering.
-        # cpu-used=8 + realtime deadline trade quality for speed, which
-        # matters a lot on a free-tier instance.
-        clip_webm = os.path.join(tmpdir, "clip.webm")
-        await _run(
-            "ffmpeg", "-y", "-i", src_path,
-            "-t", str(duration),
-            "-vf", "scale='min(1280,iw)':-2",
-            "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0",
-            "-deadline", "realtime", "-cpu-used", "8",
-            "-an", clip_webm,
-            timeout=180.0,
-        )
-
-        # page.set_content() gives the page an opaque (non-file://) origin, so
-        # a file:// <video src> is blocked by Chromium's local-resource
-        # safety check ("Not allowed to load local resource") even though
-        # the same scheme works fine for page.goto("file://...")). A data:
-        # URI sidesteps the origin check entirely - same trick already used
-        # for the logo PNGs below.
-        with open(clip_webm, "rb") as f:
-            clip_b64 = base64.b64encode(f.read()).decode("ascii")
-
+        # Earlier approach played the clip live inside the page and had
+        # Chromium record the composited result as video - that 502'd on
+        # Render's 512MB free instance even after --disable-dev-shm-usage and
+        # a half-resolution capture: Chromium's own video-encode pipeline is
+        # just too heavy for that budget. Chromium now renders the branded
+        # chrome ONCE as a transparent still PNG (the same cheap cost as the
+        # existing, already-stable /render image endpoint - no <video>
+        # element, no recording), and ffmpeg alone - much lighter than
+        # Chromium's compositor - does all the actual video work: scaling
+        # the source clip and compositing it under the chrome PNG.
+        chrome_png = os.path.join(tmpdir, "chrome.png")
         html = VIDEO_TEMPLATE.render(
             tajawal_css=TAJAWAL_CSS,
             logo_b64=LOGO_B64,
             logo_navy_b64=LOGO_NAVY_B64,
             canvas_w=VIDEO_CANVAS_W,
             canvas_h=VIDEO_CANVAS_H,
-            record_scale=RECORD_SCALE,
             video_mode=video_mode,
-            video_src=f"data:video/webm;base64,{clip_b64}",
             window_top=window_top,
-            window_h=window_h,
+            window_left=window_left,
             window_draw_w=window_draw_w,
             window_draw_h=window_draw_h,
             category_emoji=req.category_emoji,
@@ -284,40 +258,61 @@ async def render_video(req: VideoRenderRequest):
             source=req.source,
             date_text=req.date_text or default_date_text(),
         )
-
-        ctx = await _browser.new_context(
-            viewport={"width": RECORD_W, "height": RECORD_H},
-            record_video_dir=tmpdir,
-            record_video_size={"width": RECORD_W, "height": RECORD_H},
+        page = await _browser.new_page(
+            viewport={"width": VIDEO_CANVAS_W, "height": VIDEO_CANVAS_H}
         )
-        page = await ctx.new_page()
         try:
-            await page.set_content(html, wait_until="load", timeout=20000)
-            try:
-                await page.wait_for_function(
-                    "window.__ended === true", timeout=int(duration * 1000) + 6000
-                )
-            except Exception:
-                pass  # fall through and capture whatever played so far rather than erroring out
+            await page.set_content(html, wait_until="networkidle", timeout=20000)
+            await page.screenshot(path=chrome_png, omit_background=True)
         finally:
             await page.close()
-        recorded_path = await page.video.path()
-        await ctx.close()
 
         final_mp4 = os.path.join(tmpdir, "final.mp4")
-        # The capture ran at RECORD_W x RECORD_H to stay inside Render's
-        # free-tier memory budget; scale back up to the real Reel canvas here
-        # - a plain resize is cheap next to Chromium's own raster/encode cost.
-        upscale = f"scale={VIDEO_CANVAS_W}:{VIDEO_CANVAS_H}:flags=lanczos"
-        mux_args = ["ffmpeg", "-y", "-i", recorded_path]
-        if has_audio:
-            mux_args += [
-                "-i", src_path, "-map", "0:v:0", "-map", "1:a:0",
-                "-vf", upscale, "-c:a", "aac", "-b:a", "128k", "-shortest",
+        if video_mode == "cover":
+            # Video fills the whole canvas edge-to-edge, same crop math as
+            # the CSS object-fit:cover it replaces.
+            filter_complex = (
+                f"[0:v]scale={VIDEO_CANVAS_W}:{VIDEO_CANVAS_H}:"
+                f"force_original_aspect_ratio=increase,"
+                f"crop={VIDEO_CANVAS_W}:{VIDEO_CANVAS_H}[clip];"
+                f"[clip][1:v]overlay=0:0:format=auto[outv]"
+            )
+            mux_args = [
+                "ffmpeg", "-y",
+                "-i", src_path,
+                "-loop", "1", "-t", str(duration), "-i", chrome_png,
+                "-filter_complex", filter_complex,
+                "-map", "[outv]",
             ]
+            if has_audio:
+                mux_args += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "128k"]
         else:
-            mux_args += ["-map", "0:v:0", "-vf", upscale]
-        mux_args += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart", final_mp4]
+            # Navy canvas, the clip scaled to fit un-cropped inside the
+            # window rect (object-fit:contain), then the chrome PNG - whose
+            # window-rect area is left unpainted/transparent so the clip
+            # shows through - on top.
+            filter_complex = (
+                f"[2:v]scale={window_draw_w}:{window_draw_h}[clip];"
+                f"[0:v][clip]overlay={window_left}:{window_top}[bg];"
+                f"[bg][1:v]overlay=0:0:format=auto[outv]"
+            )
+            mux_args = [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i",
+                f"color=c=#0B1F3A:s={VIDEO_CANVAS_W}x{VIDEO_CANVAS_H}:"
+                f"d={duration}:r=25",
+                "-loop", "1", "-t", str(duration), "-i", chrome_png,
+                "-i", src_path,
+                "-filter_complex", filter_complex,
+                "-map", "[outv]",
+            ]
+            if has_audio:
+                mux_args += ["-map", "2:a:0", "-c:a", "aac", "-b:a", "128k"]
+        mux_args += [
+            "-t", str(duration),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "high",
+            "-movflags", "+faststart", final_mp4,
+        ]
         await _run(*mux_args, timeout=120.0)
 
         with open(final_mp4, "rb") as f:
