@@ -35,6 +35,8 @@ class RenderRequest(BaseModel):
     category_emoji: str = "📰"
     category_label: str = "خبر"
     photo_url: str | None = None
+    photo_fit: str = "cover"  # "cover" for real photos, "contain" for logos/graphics with their own bg
+    photo_bg: str = "#FFFFFF"  # canvas bg behind a "contain"-fit graphic
     photo_tag_text: str | None = None  # e.g. "صورة حقيقية" / "صورة أرشيفية"
     ai_disclaimer: bool = False
     is_mourning: bool = False
@@ -82,6 +84,8 @@ async def render(req: RenderRequest):
         logo_b64=LOGO_B64,
         logo_navy_b64=LOGO_NAVY_B64,
         photo_url=req.photo_url,
+        photo_fit=req.photo_fit,
+        photo_bg=req.photo_bg,
         category_emoji=req.category_emoji,
         category_label=req.category_label,
         photo_tag_text=req.photo_tag_text,

@@ -17,7 +17,8 @@
 
   .photo {
     position: absolute; inset: 0; width: 1080px; height: 1080px;
-    object-fit: cover; object-position: center;
+    object-fit: {{ photo_fit|default('cover') }}; object-position: center;
+    {% if photo_fit == 'contain' %}background: {{ photo_bg|default('#FFFFFF') }};{% endif %}
     {% if is_mourning %}filter: grayscale(55%) contrast(1.02);{% endif %}
   }
   .photo-fallback {
