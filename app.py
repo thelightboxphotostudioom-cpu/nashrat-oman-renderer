@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import gc
 import json
 import os
@@ -45,6 +46,7 @@ SIGNATURE_MUSIC_PATH = f"{ROOT}/assets/tv-news-theme.mp3"
 ENV = Environment(loader=FileSystemLoader(f"{ROOT}/templates"))
 TEMPLATE = ENV.get_template("post.html")
 VIDEO_TEMPLATE = ENV.get_template("post_video.html")
+VIDEO_TEMPLATE_SQUARE = ENV.get_template("post_video_square.html")
 
 ARABIC_MONTHS = [
     "", "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
@@ -134,6 +136,15 @@ def default_date_text() -> str:
 
 
 async def _download(url: str, dest: str) -> None:
+    # n8n often hands us an already-fetched image as a base64 data: URI
+    # (the "photo" binary it already has in memory) rather than a remote
+    # URL - decode it straight to disk instead of trying to GET a data:
+    # URI over HTTP, which httpx can't do.
+    if url.startswith("data:"):
+        _, _, b64 = url.partition(",")
+        with open(dest, "wb") as f:
+            f.write(base64.b64decode(b64))
+        return
     async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
@@ -333,34 +344,57 @@ async def render_video(req: VideoRenderRequest):
         gc.collect()
 
         final_mp4 = os.path.join(tmpdir, "final.mp4")
+        # Signature-track rule (user-confirmed 18 Oct 2026, reaffirmed
+        # 9 Nov 2026): every reel/video post carries the SAME TV News
+        # Theme track, no exceptions - including a real sourced video that
+        # already has its own audio (e.g. an official statement), where it
+        # plays as a quiet background bed under the original audio rather
+        # than replacing it.
+        fade_start = max(duration - 1.0, 0.0)
+        if has_audio:
+            audio_filter = (
+                f"[{{music_idx}}:a]atrim=0:{duration},asetpts=PTS-STARTPTS,"
+                f"volume=0.22,afade=t=out:st={fade_start}:d=1.0[bgm];"
+                f"[{{voice_idx}}:a]volume=1.0[voice];"
+                f"[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2[outa]"
+            )
+        else:
+            audio_filter = (
+                f"[{{music_idx}}:a]atrim=0:{duration},asetpts=PTS-STARTPTS,"
+                f"volume=0.9,afade=t=out:st={fade_start}:d=1.0[outa]"
+            )
+
         if video_mode == "cover":
             # Video fills the whole canvas edge-to-edge, same crop math as
             # the CSS object-fit:cover it replaces.
-            filter_complex = (
+            # Inputs: 0=source clip, 1=chrome (looped), 2=signature music.
+            video_filter = (
                 f"[0:v]scale={VIDEO_CANVAS_W}:{VIDEO_CANVAS_H}:"
                 f"force_original_aspect_ratio=increase,"
                 f"crop={VIDEO_CANVAS_W}:{VIDEO_CANVAS_H}[clip];"
                 f"[clip][1:v]overlay=0:0:format=auto[outv]"
             )
+            filter_complex = video_filter + ";" + audio_filter.format(music_idx=2, voice_idx=0)
             mux_args = [
                 "ffmpeg", "-y",
                 "-i", src_path,
                 "-loop", "1", "-t", str(duration), "-i", chrome_png,
+                "-stream_loop", "-1", "-i", SIGNATURE_MUSIC_PATH,
                 "-filter_complex", filter_complex,
-                "-map", "[outv]",
+                "-map", "[outv]", "-map", "[outa]", "-c:a", "aac", "-b:a", "128k",
             ]
-            if has_audio:
-                mux_args += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "128k"]
         else:
             # Navy canvas, the clip scaled to fit un-cropped inside the
             # window rect (object-fit:contain), then the chrome PNG - whose
             # window-rect area is left unpainted/transparent so the clip
             # shows through - on top.
-            filter_complex = (
+            # Inputs: 0=navy bg, 1=chrome (looped), 2=source clip, 3=music.
+            video_filter = (
                 f"[2:v]scale={window_draw_w}:{window_draw_h}[clip];"
                 f"[0:v][clip]overlay={window_left}:{window_top}[bg];"
                 f"[bg][1:v]overlay=0:0:format=auto[outv]"
             )
+            filter_complex = video_filter + ";" + audio_filter.format(music_idx=3, voice_idx=2)
             mux_args = [
                 "ffmpeg", "-y",
                 "-f", "lavfi", "-i",
@@ -368,11 +402,10 @@ async def render_video(req: VideoRenderRequest):
                 f"d={duration}:r=25",
                 "-loop", "1", "-t", str(duration), "-i", chrome_png,
                 "-i", src_path,
+                "-stream_loop", "-1", "-i", SIGNATURE_MUSIC_PATH,
                 "-filter_complex", filter_complex,
-                "-map", "[outv]",
+                "-map", "[outv]", "-map", "[outa]", "-c:a", "aac", "-b:a", "128k",
             ]
-            if has_audio:
-                mux_args += ["-map", "2:a:0", "-c:a", "aac", "-b:a", "128k"]
         mux_args += [
             "-t", str(duration),
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
@@ -426,17 +459,17 @@ async def render_breaking_image_video(req: BreakingImageVideoRequest):
         fps = 25
         frames = max(int(duration * fps), 1)
 
-        # Branded chrome, same "cover" layout used for a real-video reel -
-        # full-bleed media behind the stripe/panel/footer, nothing boxed.
+        # Square (1080x1080), matching the locked normal-post template
+        # exactly - Ahmed confirmed 9 Nov 2026 a breaking-news post that
+        # was going to be a normal square post stays square as a video
+        # (animated + sound), it should NOT be forced into the vertical
+        # 1080x1920 reel canvas just because it became a video.
+        canvas = 1080
         chrome_png = os.path.join(tmpdir, "chrome.png")
-        html = VIDEO_TEMPLATE.render(
+        html = VIDEO_TEMPLATE_SQUARE.render(
             tajawal_css=TAJAWAL_CSS,
             logo_b64=LOGO_B64,
             logo_navy_b64=LOGO_NAVY_B64,
-            canvas_w=VIDEO_CANVAS_W,
-            canvas_h=VIDEO_CANVAS_H,
-            video_mode="cover",
-            window_top=0, window_left=0, window_draw_w=0, window_draw_h=0,
             category_emoji=req.category_emoji,
             category_label=req.category_label,
             headline=req.headline,
@@ -444,9 +477,7 @@ async def render_breaking_image_video(req: BreakingImageVideoRequest):
             source=req.source,
             date_text=req.date_text or default_date_text(),
         )
-        page = await _browser.new_page(
-            viewport={"width": VIDEO_CANVAS_W, "height": VIDEO_CANVAS_H}
-        )
+        page = await _browser.new_page(viewport={"width": canvas, "height": canvas})
         try:
             await page.set_content(html, wait_until="networkidle", timeout=20000)
             await page.screenshot(path=chrome_png, omit_background=True)
@@ -466,15 +497,15 @@ async def render_breaking_image_video(req: BreakingImageVideoRequest):
 
         final_mp4 = os.path.join(tmpdir, "final.mp4")
         # Slow Ken-Burns zoom on the still photo: scale/crop to cover the
-        # 1080x1920 reel canvas first (same crop math as object-fit:cover),
-        # then zoompan does a very gentle creep from 1.0x to ~1.12x over the
+        # square canvas first (same crop math as object-fit:cover), then
+        # zoompan does a very gentle creep from 1.0x to ~1.12x over the
         # whole clip so the frame never looks completely static.
         zoom_end = 1.0 + 0.12 * (duration / 8.0)
         video_filter = (
-            f"scale={VIDEO_CANVAS_W * 2}:{VIDEO_CANVAS_H * 2}:force_original_aspect_ratio=increase,"
-            f"crop={VIDEO_CANVAS_W * 2}:{VIDEO_CANVAS_H * 2},"
+            f"scale={canvas * 2}:{canvas * 2}:force_original_aspect_ratio=increase,"
+            f"crop={canvas * 2}:{canvas * 2},"
             f"zoompan=z='min(1+({zoom_end}-1)*on/{frames},{zoom_end})':"
-            f"d={frames}:s={VIDEO_CANVAS_W}x{VIDEO_CANVAS_H}:fps={fps}"
+            f"d={frames}:s={canvas}x{canvas}:fps={fps}"
         )
         filter_complex = f"[0:v]{video_filter}[zoomed];[zoomed][1:v]overlay=0:0:format=auto[outv]"
 
