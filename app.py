@@ -36,6 +36,12 @@ with open(f"{ROOT}/assets/khanjar_base64.txt", encoding="utf-8") as f:
 with open(f"{ROOT}/assets/khanjar_navy_base64.txt", encoding="utf-8") as f:
     LOGO_NAVY_B64 = f.read()
 
+# The page's one signature background track (user-confirmed 18 Oct 2026):
+# same sound on every reel/video post, breaking news included - never swapped
+# per post. Bundled with the service so breaking-news-image-to-video clips
+# never depend on an external URL for it.
+SIGNATURE_MUSIC_PATH = f"{ROOT}/assets/tv-news-theme.mp3"
+
 ENV = Environment(loader=FileSystemLoader(f"{ROOT}/templates"))
 TEMPLATE = ENV.get_template("post.html")
 VIDEO_TEMPLATE = ENV.get_template("post_video.html")
@@ -70,6 +76,30 @@ class VideoRenderRequest(BaseModel):
     category_emoji: str = "📰"
     category_label: str = "خبر"
     video_url: str
+    date_text: str | None = None
+    file_name: str | None = None
+    token: str | None = Field(default=None, description="shared secret, optional")
+
+
+class BreakingImageVideoRequest(BaseModel):
+    # Breaking-news still photo -> short branded video with a slow Ken-Burns
+    # zoom and the page's signature background music, instead of going out
+    # as a silent static image. Requested by Ahmed 9 Nov 2026 (rule 2).
+    headline: str
+    summary: str | None = None
+    source: str | None = None
+    category_emoji: str = "🚨"
+    category_label: str = "عاجل"
+    photo_url: str
+    music_url: str | None = Field(
+        default=None,
+        description="optional override URL for the background track; if omitted, the bundled signature 'TV News Theme' track (assets/tv-news-theme.mp3) is used",
+    )
+    no_music: bool = Field(
+        default=False,
+        description="set true to render silent instead of using the signature track",
+    )
+    duration_seconds: float = Field(default=8.0, ge=3.0, le=20.0)
     date_text: str | None = None
     file_name: str | None = None
     token: str | None = Field(default=None, description="shared secret, optional")
@@ -362,6 +392,116 @@ async def render_video(req: VideoRenderRequest):
         try:
             # 270s leaves margin under n8n's "Render Branded Video" node's
             # own 300s wait, and under this handler's overall budget.
+            await _run(*mux_args, timeout=270.0, stage="ffmpeg_encode")
+        except HTTPException:
+            _log_rss("ffmpeg_failed")
+            raise
+        _log_rss("ffmpeg_done")
+
+        with open(final_mp4, "rb") as f:
+            mp4_bytes = f.read()
+        _log_rss("read_final")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    headers = {}
+    if req.file_name:
+        headers["Content-Disposition"] = f'inline; filename="{req.file_name}.mp4"'
+    return Response(content=mp4_bytes, media_type="video/mp4", headers=headers)
+
+
+@app.post("/render-breaking-image-video")
+async def render_breaking_image_video(req: BreakingImageVideoRequest):
+    if RENDER_TOKEN and req.token != RENDER_TOKEN:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    tmpdir = tempfile.mkdtemp(prefix="nvrbi_")
+    _log_rss("start")
+    try:
+        photo_path = os.path.join(tmpdir, "photo.bin")
+        await _download(req.photo_url, photo_path)
+        _log_rss("photo_downloaded")
+
+        duration = req.duration_seconds
+        fps = 25
+        frames = max(int(duration * fps), 1)
+
+        # Branded chrome, same "cover" layout used for a real-video reel -
+        # full-bleed media behind the stripe/panel/footer, nothing boxed.
+        chrome_png = os.path.join(tmpdir, "chrome.png")
+        html = VIDEO_TEMPLATE.render(
+            tajawal_css=TAJAWAL_CSS,
+            logo_b64=LOGO_B64,
+            logo_navy_b64=LOGO_NAVY_B64,
+            canvas_w=VIDEO_CANVAS_W,
+            canvas_h=VIDEO_CANVAS_H,
+            video_mode="cover",
+            window_top=0, window_left=0, window_draw_w=0, window_draw_h=0,
+            category_emoji=req.category_emoji,
+            category_label=req.category_label,
+            headline=req.headline,
+            summary=req.summary,
+            source=req.source,
+            date_text=req.date_text or default_date_text(),
+        )
+        page = await _browser.new_page(
+            viewport={"width": VIDEO_CANVAS_W, "height": VIDEO_CANVAS_H}
+        )
+        try:
+            await page.set_content(html, wait_until="networkidle", timeout=20000)
+            await page.screenshot(path=chrome_png, omit_background=True)
+        finally:
+            await page.close()
+        _log_rss("chrome_png_rendered")
+        gc.collect()
+
+        music_path = None
+        if not req.no_music:
+            if req.music_url:
+                music_path = os.path.join(tmpdir, "music.bin")
+                await _download(req.music_url, music_path)
+                _log_rss("music_downloaded")
+            else:
+                music_path = SIGNATURE_MUSIC_PATH
+
+        final_mp4 = os.path.join(tmpdir, "final.mp4")
+        # Slow Ken-Burns zoom on the still photo: scale/crop to cover the
+        # 1080x1920 reel canvas first (same crop math as object-fit:cover),
+        # then zoompan does a very gentle creep from 1.0x to ~1.12x over the
+        # whole clip so the frame never looks completely static.
+        zoom_end = 1.0 + 0.12 * (duration / 8.0)
+        video_filter = (
+            f"scale={VIDEO_CANVAS_W * 2}:{VIDEO_CANVAS_H * 2}:force_original_aspect_ratio=increase,"
+            f"crop={VIDEO_CANVAS_W * 2}:{VIDEO_CANVAS_H * 2},"
+            f"zoompan=z='min(1+({zoom_end}-1)*on/{frames},{zoom_end})':"
+            f"d={frames}:s={VIDEO_CANVAS_W}x{VIDEO_CANVAS_H}:fps={fps}"
+        )
+        filter_complex = f"[0:v]{video_filter}[zoomed];[zoomed][1:v]overlay=0:0:format=auto[outv]"
+
+        mux_args = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", photo_path,
+            "-loop", "1", "-t", str(duration), "-i", chrome_png,
+        ]
+        if music_path:
+            mux_args += ["-i", music_path]
+        mux_args += ["-filter_complex", filter_complex, "-map", "[outv]"]
+        if music_path:
+            # Signature background track, trimmed to the clip length with a
+            # short fade-out so it never cuts off abruptly mid-note.
+            fade_start = max(duration - 1.0, 0.0)
+            mux_args += [
+                "-filter:a", f"afade=t=out:st={fade_start}:d=1.0",
+                "-map", "2:a:0", "-c:a", "aac", "-b:a", "128k", "-shortest",
+            ]
+        mux_args += [
+            "-t", str(duration),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
+            "-threads", "1", "-preset", "ultrafast", "-crf", "26",
+            "-x264-params", "rc-lookahead=10",
+            "-movflags", "+faststart", final_mp4,
+        ]
+        try:
             await _run(*mux_args, timeout=270.0, stage="ffmpeg_encode")
         except HTTPException:
             _log_rss("ffmpeg_failed")
