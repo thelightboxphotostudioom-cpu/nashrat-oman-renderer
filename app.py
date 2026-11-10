@@ -66,6 +66,7 @@ class RenderRequest(BaseModel):
     photo_tag_text: str | None = None  # e.g. "صورة حقيقية" / "صورة أرشيفية"
     ai_disclaimer: bool = False
     is_mourning: bool = False
+    is_breaking: bool = False  # red breaking treatment (pill + "خبر عاجل" bar), Ahmed 10 Nov 2026
     date_text: str | None = None
     file_name: str | None = None
     token: str | None = Field(default=None, description="shared secret, optional")
@@ -229,6 +230,7 @@ async def render(req: RenderRequest):
         photo_tag_text=req.photo_tag_text,
         ai_disclaimer=req.ai_disclaimer,
         is_mourning=req.is_mourning,
+        is_breaking=req.is_breaking,
         headline=req.headline,
         summary=req.summary,
         source=req.source,

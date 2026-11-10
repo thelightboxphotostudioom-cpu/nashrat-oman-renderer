@@ -102,6 +102,20 @@
     color: #8FA0BC; font-size: 15px; font-weight: 500;
   }
 
+  /* Breaking news (Ahmed, 10 Nov 2026): must be instantly distinguishable from a
+     normal post via red, without changing the locked layout/identity. */
+  .category-pill.breaking { background: #DB161E; box-shadow: 0 0 0 3px rgba(255,255,255,.85), 0 4px 14px rgba(219,22,30,.55); }
+  .live-dot { width: 12px; height: 12px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 0 0 4px rgba(255,255,255,.35); }
+  .breaking-bar {
+    height: 54px; width: 100%; background: #DB161E;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 28px; color: #FFFFFF;
+  }
+  .breaking-bar .label { display: flex; align-items: center; gap: 12px; font-size: 26px; font-weight: 800; }
+  .breaking-bar .en { font-size: 16px; font-weight: 800; letter-spacing: 3px; opacity: .9; direction: ltr; }
+  .panel.breaking { background: rgba(11,31,58,.96); border-top: 0; }
+  .breaking-gap { height: 5px; width: 100%; background: #0B1F3A; }
+
   .footer {
     height: 64px; width: 100%; background: #007A3D;
     display: flex; align-items: center; justify-content: space-between;
@@ -128,8 +142,8 @@
   <div class="wordmark">نشرة عُمان</div>
   {% if is_mourning %}<div class="mourning-ribbon">تعزية</div>{% endif %}
 
-  <div class="category-pill">
-    <span>{{ category_emoji }}</span><span>{{ category_label }}</span>
+  <div class="category-pill{% if is_breaking %} breaking{% endif %}">
+    {% if is_breaking %}<span class="live-dot"></span><span>عاجل</span>{% else %}<span>{{ category_emoji }}</span><span>{{ category_label }}</span>{% endif %}
   </div>
   {% if photo_tag_text %}
   <div class="photo-tag-pill">✓ {{ photo_tag_text }}</div>
@@ -139,8 +153,15 @@
     {% if ai_disclaimer %}
     <div class="ai-disclaimer">صورة توضيحية مولّدة بالذكاء الاصطناعي — ليست من موقع حقيقي</div>
     {% endif %}
+    {% if is_breaking %}
+    <div class="breaking-bar">
+      <div class="label"><span class="live-dot"></span><span>خبر عاجل</span></div>
+      <div class="en">BREAKING NEWS</div>
+    </div>
+    <div class="breaking-gap"></div>
+    {% endif %}
     <div class="stripe"></div>
-    <div class="panel">
+    <div class="panel{% if is_breaking %} breaking{% endif %}">
       <div class="headline">{{ headline }}</div>
       {% if summary %}<div class="summary">{{ summary }}</div>{% endif %}
       {% if source %}<div class="source">المصدر: {{ source }}</div>{% endif %}
