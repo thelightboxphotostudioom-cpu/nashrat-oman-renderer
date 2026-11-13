@@ -146,12 +146,51 @@ async def _download(url: str, dest: str) -> None:
         with open(dest, "wb") as f:
             f.write(base64.b64decode(b64))
         return
+    if _is_social_page(url):
+        await _download_social_video(url, dest)
+        return
     async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
             with open(dest, "wb") as f:
                 async for chunk in resp.aiter_bytes(1 << 16):
                     f.write(chunk)
+
+
+# A news item whose source is itself a reel/video post (Instagram reel, X video
+# tweet, ...) must go out as the REAL video, never a screenshot of it (Ahmed,
+# 14 Nov 2026 - third time raised). n8n can only hand us the post's page URL,
+# so resolve it to the actual media file here with yt-dlp.
+_SOCIAL_HOSTS = ("instagram.com", "x.com", "twitter.com", "tiktok.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch")
+
+
+def _is_social_page(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return any(host == h or host.endswith("." + h) for h in _SOCIAL_HOSTS)
+
+
+async def _download_social_video(url: str, dest: str) -> None:
+    tmpl = dest + ".%(ext)s"
+    await _run(
+        sys.executable, "-m", "yt_dlp",
+        "--no-playlist", "--no-warnings", "--quiet",
+        "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+        "--merge-output-format", "mp4",
+        "--max-filesize", "150M",
+        "-o", tmpl,
+        url,
+        timeout=180.0,
+        stage="yt-dlp",
+    )
+    produced = [f for f in os.listdir(os.path.dirname(dest) or ".")
+                if f.startswith(os.path.basename(dest) + ".")]
+    if not produced:
+        raise HTTPException(status_code=502, detail="stage=yt-dlp produced no file")
+    shutil.move(os.path.join(os.path.dirname(dest) or ".", produced[0]), dest)
 
 
 async def _run(*args: str, timeout: float = 120.0, stage: str = "") -> tuple[bytes, bytes]:
@@ -443,6 +482,27 @@ async def render_video(req: VideoRenderRequest):
     if req.file_name:
         headers["Content-Disposition"] = f'inline; filename="{req.file_name}.mp4"'
     return Response(content=mp4_bytes, media_type="video/mp4", headers=headers)
+
+
+class ProbeVideoRequest(BaseModel):
+    url: str
+    token: str | None = None
+
+
+@app.post("/probe-video")
+async def probe_video(req: ProbeVideoRequest):
+    # Diagnostic: can we fetch the real video behind a post URL? Returns size/duration only.
+    if RENDER_TOKEN and req.token != RENDER_TOKEN:
+        raise HTTPException(status_code=401, detail="invalid token")
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "src")
+        await _download(req.url, path)
+        out, _ = await _run("ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height",
+                            "-of", "json", path, timeout=30, stage="ffprobe")
+        return {"ok": True, "bytes": os.path.getsize(path), "probe": json.loads(out or b"{}")}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 @app.post("/render-breaking-image-video")
