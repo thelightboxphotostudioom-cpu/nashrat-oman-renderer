@@ -67,6 +67,7 @@ class RenderRequest(BaseModel):
     ai_disclaimer: bool = False
     is_mourning: bool = False
     is_breaking: bool = False  # red breaking treatment (pill + "خبر عاجل" bar), Ahmed 10 Nov 2026
+    vip_focus: bool | None = None  # photo-focus layout so VIP faces are never covered (Ahmed 17 Nov 2026); None = auto-detect
     date_text: str | None = None
     file_name: str | None = None
     token: str | None = Field(default=None, description="shared secret, optional")
@@ -252,6 +253,22 @@ async def health():
     return {"ok": True, "build": BUILD_VERSION}
 
 
+# STRICT RULE (Ahmed, 17 Nov 2026): photos of heads of state, royals, ministers and other VIPs
+# must never have their faces covered or obscured by the text panel. Auto-switch to the
+# photo-focus layout whenever the story is about such a person (caller can force with vip_focus).
+VIP_KEYWORDS = ("جلالة", "السلطان", "سمو", "صاحب السمو", "ولي العهد", "الأمير", "الملك", "الرئيس",
+                "رئيس", "وزير", "وزيرة", "معالي", "سعادة", "ديوان البلاط", "قصر العلم")
+
+
+def _is_vip(req) -> bool:
+    if req.vip_focus is not None:
+        return bool(req.vip_focus) and bool(req.photo_url)
+    if not req.photo_url:
+        return False
+    text = f"{req.headline} {req.summary or ''}"
+    return any(k in text for k in VIP_KEYWORDS)
+
+
 @app.post("/render")
 async def render(req: RenderRequest):
     if RENDER_TOKEN and req.token != RENDER_TOKEN:
@@ -270,6 +287,7 @@ async def render(req: RenderRequest):
         ai_disclaimer=req.ai_disclaimer,
         is_mourning=req.is_mourning,
         is_breaking=req.is_breaking,
+        vip_focus=_is_vip(req),
         headline=req.headline,
         summary=req.summary,
         source=req.source,
