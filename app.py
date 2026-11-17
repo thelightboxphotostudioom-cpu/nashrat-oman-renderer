@@ -257,7 +257,8 @@ async def health():
 # must never have their faces covered or obscured by the text panel. Auto-switch to the
 # photo-focus layout whenever the story is about such a person (caller can force with vip_focus).
 VIP_KEYWORDS = ("جلالة", "السلطان", "سمو", "صاحب السمو", "ولي العهد", "الأمير", "الملك", "الرئيس",
-                "رئيس", "وزير", "وزيرة", "معالي", "سعادة", "ديوان البلاط", "قصر العلم")
+                "رئيس", "وزير", "وزيرة", "معالي", "سعادة", "ديوان البلاط", "قصر العلم", "زيارة دولة", "بيان مشترك",
+                "مباحثات", "يستقبل", "يودّع", "يودع", "ذي يزن", "بلعرب")
 
 
 def _is_vip(req) -> bool:
